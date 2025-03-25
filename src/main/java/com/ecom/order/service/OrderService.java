@@ -8,13 +8,11 @@ import com.ecom.order.mapper.OrderMapper;
 import com.ecom.order.modal.Order;
 import com.ecom.order.modal.OrderItem;
 import com.ecom.order.repository.OrderRepository;
-import jakarta.transaction.Transactional;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.transaction.Transactional;import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
-
 @Service
 public class OrderService {
 
@@ -33,10 +31,13 @@ public class OrderService {
     }
 
     @Transactional
-    public OrderResponseDTO placeOrder(Long customerId) {
+    public OrderResponseDTO placeOrder(Long customerId, String jwtToken) {
 
         // 1. Get customer details
-        CustomerDTO customer = customerClient.getCustomerById(customerId);
+        CustomerDTO customer = customerClient.getCustomerById(customerId, jwtToken);
+        if (customer == null) {
+            throw new RuntimeException("Customer not found with ID: " + customerId);
+        }
 
         // 2. Get cart items from CartService
         List<OrderItemDTO> cartItems = cartClient.getCartItems(customerId);
@@ -69,7 +70,10 @@ public class OrderService {
         }
 
         // 3. Deduct inventory in bulk
-        inventoryClient.deductInventory(inventoryRequests,customerId);
+        inventoryClient.deductInventory(inventoryRequests, customerId);
+//        if (!inventorySuccess) {
+//            throw new RuntimeException("Failed to deduct inventory for customerId: " + customerId);
+//        }
 
         // 4. Create and save order
         Order order = new Order();
@@ -85,10 +89,22 @@ public class OrderService {
         orderRepository.save(order);
 
         inventoryRequests.forEach(request -> request.setOrderId(order.getId()));
+
         // 5. Clear the cart
         cartClient.clearCart(customerId);
 
         // 6. Return the order response
         return orderMapper.toResponseDTO(order);
     }
+
+    // Method to retrieve the JWT token from SecurityContext
+    public String extractJwtFromRequest(HttpServletRequest request) {
+        String bearerToken = request.getHeader("Authorization");
+        if (bearerToken != null && bearerToken.startsWith("Bearer ")) {
+            return bearerToken.substring(7); // remove "Bearer " prefix
+        }
+        return null;
+    }
+
+    // Method to get customer details
 }
