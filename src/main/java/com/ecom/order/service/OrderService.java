@@ -4,18 +4,24 @@ import com.ecom.order.client.CartClient;
 import com.ecom.order.client.CustomerClient;
 import com.ecom.order.client.InventoryClient;
 import com.ecom.order.dto.*;
+import com.ecom.order.exception.InventoryNotFoundException;
+import com.ecom.order.exception.InventoryServiceException;
 import com.ecom.order.mapper.OrderMapper;
 import com.ecom.order.modal.Order;
 import com.ecom.order.modal.OrderItem;
 import com.ecom.order.repository.OrderRepository;
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.transaction.Transactional;import org.springframework.stereotype.Service;
+import jakarta.transaction.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
 @Service
 public class OrderService {
 
+    private static final Logger logger = LoggerFactory.getLogger(OrderService.class);
     private final OrderRepository orderRepository;
     private final CartClient cartClient;
     private final InventoryClient inventoryClient;
@@ -33,68 +39,79 @@ public class OrderService {
     @Transactional
     public OrderResponseDTO placeOrder(Long customerId, String jwtToken) {
 
-        // 1. Get customer details
-        CustomerDTO customer = customerClient.getCustomerById(customerId, jwtToken);
-        if (customer == null) {
-            throw new RuntimeException("Customer not found with ID: " + customerId);
-        }
+        try {
+            // 1. Get customer details
+            CustomerDTO customer = customerClient.getCustomerById(customerId, jwtToken);
+            if (customer == null) {
+                throw new RuntimeException("Customer not found with ID: " + customerId);
+            }
 
-        // 2. Get cart items from CartService
-        List<OrderItemDTO> cartItems = cartClient.getCartItems(customerId);
+            // 2. Get cart items from CartService
+            List<OrderItemDTO> cartItems = cartClient.getCartItems(customerId);
 
-        if (cartItems.isEmpty()) {
-            throw new RuntimeException("Cart is empty for customerId: " + customerId);
-        }
+            if (cartItems.isEmpty()) {
+                throw new RuntimeException("Cart is empty for customerId: " + customerId);
+            }
 
-        double totalAmount = 0.0;
-        List<OrderItem> orderItems = new ArrayList<>();
-        List<InventoryRequestDTO> inventoryRequests = new ArrayList<>();
+            double totalAmount = 0.0;
+            List<OrderItem> orderItems = new ArrayList<>();
+            List<InventoryRequestDTO> inventoryRequests = new ArrayList<>();
 
-        for (OrderItemDTO itemDTO : cartItems) {
-            double itemTotal = itemDTO.getPrice() * itemDTO.getQuantity();
-            totalAmount += itemTotal;
+            for (OrderItemDTO itemDTO : cartItems) {
+                double itemTotal = itemDTO.getPrice() * itemDTO.getQuantity();
+                totalAmount += itemTotal;
 
-            // Create and populate OrderItem
-            OrderItem orderItem = new OrderItem();
-            orderItem.setProductId(itemDTO.getProductId());
-            orderItem.setProductName(itemDTO.getProductName());
-            orderItem.setPrice(itemDTO.getPrice());
-            orderItem.setQuantity(itemDTO.getQuantity());
-            orderItems.add(orderItem);
+                // Create and populate OrderItem
+                OrderItem orderItem = new OrderItem();
+                orderItem.setProductId(itemDTO.getProductId());
+                orderItem.setProductName(itemDTO.getProductName());
+                orderItem.setPrice(itemDTO.getPrice());
+                orderItem.setQuantity(itemDTO.getQuantity());
+                orderItems.add(orderItem);
 
-            // Create and populate InventoryRequestDTO for inventory deduction
-            InventoryRequestDTO inventoryRequest = new InventoryRequestDTO();
-            inventoryRequest.setProductId(itemDTO.getProductId());
-            inventoryRequest.setQuantity(itemDTO.getQuantity());
-            inventoryRequests.add(inventoryRequest);
-        }
+                // Create and populate InventoryRequestDTO for inventory deduction
+                InventoryRequestDTO inventoryRequest = new InventoryRequestDTO();
+                inventoryRequest.setProductId(itemDTO.getProductId());
+                inventoryRequest.setQuantity(itemDTO.getQuantity());
+                inventoryRequests.add(inventoryRequest);
+            }
 
-        // 3. Deduct inventory in bulk
-        inventoryClient.deductInventory(inventoryRequests, customerId);
+            // 3. Deduct inventory in bulk
+            inventoryClient.deductInventory(inventoryRequests, customerId);
 //        if (!inventorySuccess) {
 //            throw new RuntimeException("Failed to deduct inventory for customerId: " + customerId);
 //        }
 
-        // 4. Create and save order
-        Order order = new Order();
-        order.setCustomerId(customerId);   // Set the customerId
-        order.setCustomerName(customer.getName());  // Set the customerName
-        order.setTotalAmount(totalAmount);  // Set the totalAmount
-        order.setStatus("PLACED");  // Set the order status
-        order.setItems(orderItems);  // Set the order items
+            // 4. Create and save order
+            Order order = new Order();
+            order.setCustomerId(customerId);   // Set the customerId
+            order.setCustomerName(customer.getName());  // Set the customerName
+            order.setTotalAmount(totalAmount);  // Set the totalAmount
+            order.setStatus("PLACED");  // Set the order status
+            order.setItems(orderItems);  // Set the order items
 
-        // Attach order reference to each order item
-        orderItems.forEach(item -> item.setOrder(order));
+            // Attach order reference to each order item
+            orderItems.forEach(item -> item.setOrder(order));
 
-        orderRepository.save(order);
+            orderRepository.save(order);
 
-        inventoryRequests.forEach(request -> request.setOrderId(order.getId()));
+            inventoryRequests.forEach(request -> request.setOrderId(order.getId()));
 
-        // 5. Clear the cart
-        cartClient.clearCart(customerId);
+            // 5. Clear the cart
+            cartClient.clearCart(customerId);
 
-        // 6. Return the order response
-        return orderMapper.toResponseDTO(order);
+            // 6. Return the order response
+            return orderMapper.toResponseDTO(order);
+        }catch (InventoryNotFoundException e) {
+            logger.error("Order placement failed due to inventory issue: {}", e.getMessage());
+            throw new InventoryNotFoundException("Some products are out of stock. Order cannot be placed.", e);
+        } catch (InventoryServiceException e) {
+            logger.error("Order placement failed due to inventory service failure: {}", e.getMessage());
+            throw new InventoryServiceException("Inventory Service is currently unavailable. Please try again later.", e);
+        } catch (Exception e) {
+            logger.error("Unexpected error occurred while placing order: {}", e.getMessage(), e);
+            throw new RuntimeException("Failed to place the order. Please try again later.", e);
+        }
     }
 
     // Method to retrieve the JWT token from SecurityContext

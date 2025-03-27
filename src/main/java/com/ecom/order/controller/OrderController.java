@@ -12,6 +12,7 @@ import org.springframework.http.HttpStatus;
 
 @RestController
 @RequestMapping("/api/orders")
+@CrossOrigin(origins = "http://localhost:3000")
 @RequiredArgsConstructor
 public class OrderController {
 
